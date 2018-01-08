@@ -1,12 +1,17 @@
 package gohive
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"net"
 )
 
+func init() {
+	sql.Register(HIVE_2, &HiveDriver{})
+}
+
+// HiveDriver implements sql.driver
 type HiveDriver struct {
-	uri string
 }
 
 // DialFunc is a function which can be used to establish the network connection.

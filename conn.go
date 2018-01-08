@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
-	"fmt"
 	"sync"
 
 	"git.apache.org/thrift.git/lib/go/thrift"
@@ -17,7 +16,6 @@ type HiveConn struct {
 	Config          *Config
 	Sock            *thrift.TSocket
 	Client          *rpc.TCLIServiceClient
-	Transport       thrift.TTransport
 	SessionHandle   *rpc.TSessionHandle
 	OperationHandle *rpc.TOperationHandle
 	lock            *sync.Mutex
@@ -52,35 +50,20 @@ func (conn *HiveConn) init() error {
 		log.WithFields(log.Fields{
 			"reason":  err,
 			"address": cfg.Address(),
-		})
+		}).Error("Hive: Create hive sock failed")
 		return err
+	} else if err := sock.Open(); err != nil {
+		log.WithFields(log.Fields{
+			"reason":  err,
+			"address": cfg.Address,
+		}).Error("Hive: Open hive sock failed")
 	} else {
 		conn.Sock = sock
 	}
 
-	transportFactory := thrift.NewTFramedTransportFactory(thrift.NewTTransportFactory())
-	transport, err := transportFactory.GetTransport(conn.Sock)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"reason":  err,
-			"address": conn.Sock.Addr(),
-		}).Error("Hive: create transport from sock failed")
-		return err
-	} else {
-		conn.Transport = transport
-	}
-	protocolFactory := thrift.NewTBinaryProtocolFactoryDefault()
-	conn.Client = rpc.NewTCLIServiceClientFactory(transport, protocolFactory)
-
-	if err := transport.Open(); err != nil {
-		log.WithFields(log.Fields{
-			"reason":  err,
-			"address": conn.Sock.Addr(),
-		}).Error("Hive: Error opening connection")
-		return err
-	} else if err := conn.openSession(); err != nil {
-		return err
-	} else if err := conn.changeDatabase(); err != nil {
+	protocol := thrift.NewTBinaryProtocolFactoryDefault()
+	conn.Client = rpc.NewTCLIServiceClientFactory(conn.Sock, protocol)
+	if err := conn.openSession(); err != nil {
 		return err
 	} else {
 		log.Debug("Hive: Open connection success")
@@ -118,13 +101,6 @@ func (conn *HiveConn) Close() error {
 		errList = append(errList, err)
 	}
 
-	if err := conn.Transport.Close(); err != nil {
-		log.WithFields(log.Fields{
-			"reason": err,
-		}).Error("Hive: close transport failed")
-		errList = append(errList, err)
-	}
-
 	if err := conn.Sock.Close(); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
@@ -146,15 +122,13 @@ func (conn *HiveConn) Close() error {
 // If Conn.Ping returns ErrBadConn, DB.Ping and DB.PingContext will remove
 // the Conn from pool.
 func (conn *HiveConn) Ping(ctx context.Context) error {
-	if !conn.Transport.IsOpen() {
-		return driver.ErrBadConn
-	} else if conn.Sock.IsOpen() {
+	if conn.Sock.IsOpen() {
 		return driver.ErrBadConn
 	}
 
 	recv := make(chan error)
 	go func() {
-		recv <- conn.checkSession(ctx)
+		recv <- conn.checkSession()
 	}()
 
 	select {
@@ -246,7 +220,7 @@ func (conn *HiveConn) closeSession() error {
 		req := &rpc.TCloseSessionReq{
 			SessionHandle: conn.SessionHandle,
 		}
-		_, err := conn.Client.CloseSession(context.Background(), req)
+		_, err := conn.Client.CloseSession(req)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"reason": err,
@@ -272,8 +246,12 @@ func (conn *HiveConn) resetSession() (*rpc.TSessionHandle, error) {
 }
 
 func (conn *HiveConn) openSession() error {
+	cfg := map[string]string{
+		"use:database": conn.Config.DBName,
+	}
 	sessionReq := &rpc.TOpenSessionReq{
 		ClientProtocol: rpc.TProtocolVersion_HIVE_CLI_SERVICE_PROTOCOL_V9,
+		Configuration:  cfg,
 	}
 
 	if len(conn.Config.User) > 0 {
@@ -282,10 +260,34 @@ func (conn *HiveConn) openSession() error {
 	if len(conn.Config.Password) > 0 {
 		sessionReq.Password = &conn.Config.Password
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), conn.Config.DialTimeout)
-	defer cancel()
 
-	if resp, err := conn.Client.OpenSession(ctx, sessionReq); err != nil {
+	var (
+		resp *rpc.TOpenSessionResp
+		err  error
+	)
+
+	if conn.Config.DialTimeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), conn.Config.DialTimeout)
+		defer cancel()
+		recvChan := make(chan error)
+		go func() {
+			resp, err = conn.Client.OpenSession(sessionReq)
+			recvChan <- err
+		}()
+		select {
+		case <-ctx.Done():
+			log.WithFields(log.Fields{
+				"reason":   "timeout",
+				"duration": conn.Config.DialTimeout,
+			}).Error("Hive: Open session timeout")
+			return errors.New("open session timeout")
+		case <-recvChan:
+		}
+	} else {
+		resp, err = conn.Client.OpenSession(sessionReq)
+	}
+
+	if err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 		}).Error("Hive: Error open session")
@@ -293,7 +295,7 @@ func (conn *HiveConn) openSession() error {
 	} else if err := VerifySuccess(resp.GetStatus(), false); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
-		}).Error("Hive: Error open session")
+		}).Error("Hive: Verify open session resp failed")
 		return err
 	} else if resp.GetSessionHandle() != nil {
 		log.Error("Hive: Open hive session success without handler")
@@ -305,13 +307,13 @@ func (conn *HiveConn) openSession() error {
 	}
 }
 
-func (conn *HiveConn) checkSession(ctx context.Context) error {
+func (conn *HiveConn) checkSession() error {
 	req := &rpc.TGetInfoReq{
 		SessionHandle: conn.SessionHandle,
 		InfoType:      rpc.TGetInfoType_CLI_SERVER_NAME,
 	}
 
-	if resp, err := conn.Client.GetInfo(ctx, req); err != nil {
+	if resp, err := conn.Client.GetInfo(req); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 		}).Error("Hive: Check session failed")
@@ -322,21 +324,6 @@ func (conn *HiveConn) checkSession(ctx context.Context) error {
 		log.Error("Hive: Check session response without info")
 		return errors.New("check session response success without info")
 	} else {
-		return nil
-	}
-}
-
-func (conn *HiveConn) changeDatabase() error {
-	dbName := conn.Config.DBName
-	query := fmt.Sprintf("use %s", dbName)
-	if stmt, err := NewHiveStatement(conn, query); err != nil {
-		return err
-	} else if _, err := stmt.Exec(nil); err != nil {
-		return err
-	} else {
-		log.WithFields(log.Fields{
-			"database": dbName,
-		}).Debug("change database success")
 		return nil
 	}
 }

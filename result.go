@@ -1,7 +1,6 @@
 package gohive
 
 import (
-	"context"
 	"database/sql/driver"
 	"errors"
 	"io"
@@ -32,7 +31,7 @@ func (r *HiveRows) init(fetchSize int) error {
 	req := &rpc.TGetResultSetMetadataReq{
 		OperationHandle: r.stmtHandle,
 	}
-	if resp, err := r.client.GetResultSetMetadata(context.Background(), req); err != nil {
+	if resp, err := r.client.GetResultSetMetadata(req); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 		}).Error("Hive: retrieve result metadata failed")
@@ -141,7 +140,7 @@ func (r *HiveRows) GetQueryLog() ([]string, error) {
 }
 
 func (r *HiveRows) readResult(req *rpc.TFetchResultsReq) (*rpc.TFetchResultsResp, error) {
-	if resp, err := r.client.FetchResults(context.Background(), req); err != nil {
+	if resp, err := r.client.FetchResults(req); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 		}).Error("Hive: Get query log failed")

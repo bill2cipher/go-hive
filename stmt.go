@@ -225,7 +225,7 @@ func (stmt *HiveStatement) hiveExec(ctx *hiveExecContext, query string) error {
 	}
 
 	client := stmt.connection.Client
-	if resp, err := client.ExecuteStatement(context.Background(), stmtReq); err != nil {
+	if resp, err := client.ExecuteStatement(stmtReq); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 			"query":  query,
@@ -251,7 +251,7 @@ func (stmt *HiveStatement) waitResponse(handle *rpc.TOperationHandle) error {
 	statusReq := &rpc.TGetOperationStatusReq{OperationHandle: handle}
 	client := stmt.connection.Client
 	for {
-		if resp, err := client.GetOperationStatus(context.Background(), statusReq); err != nil {
+		if resp, err := client.GetOperationStatus(statusReq); err != nil {
 			log.WithFields(log.Fields{
 				"reason": err,
 			}).Error("Hive: Query execute status failed")
@@ -349,7 +349,7 @@ func (stmt *HiveStatement) closeOperation(operation *rpc.TOperationHandle) error
 		req := &rpc.TCloseOperationReq{
 			OperationHandle: operation,
 		}
-		_, err := stmt.connection.Client.CloseOperation(context.Background(), req)
+		_, err := stmt.connection.Client.CloseOperation(req)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"reason": err,
