@@ -7,14 +7,25 @@ import (
 	"sync"
 
 	"git.apache.org/thrift.git/lib/go/thrift"
+	sasl "github.com/jellybean4/go-sasl"
 	"github.com/jellybean4/gohive/hive_service/rpc"
+	stransport "github.com/jellybean4/thrift-sasl"
 	log "github.com/sirupsen/logrus"
+)
+
+const (
+	// HiveAuthNoSasl indicate no sasl need here
+	HiveAuthNoSasl = "nosasl"
+	// HiveAuthPlain is the default sasl mechanism
+	HiveAuthPlain = "plain"
+	// HiveAuthKerberos indicate kerberos sasl mechanism need here
+	HiveAuthKerberos = "kerberos"
 )
 
 // HiveConn implements driver.Conn
 type HiveConn struct {
 	Config          *Config
-	Sock            *thrift.TSocket
+	Transport       thrift.TTransport
 	Client          *rpc.TCLIServiceClient
 	SessionHandle   *rpc.TSessionHandle
 	OperationHandle *rpc.TOperationHandle
@@ -46,23 +57,29 @@ func NewHiveConn(dsn string) (*HiveConn, error) {
 
 func (conn *HiveConn) init() error {
 	cfg := conn.Config
-	if sock, err := thrift.NewTSocketTimeout(cfg.Address(), cfg.DialTimeout); err != nil {
+	sock, err := thrift.NewTSocketTimeout(cfg.Address(), cfg.DialTimeout)
+	if err != nil {
 		log.WithFields(log.Fields{
 			"reason":  err,
 			"address": cfg.Address(),
 		}).Error("Hive: Create hive sock failed")
 		return err
-	} else if err := sock.Open(); err != nil {
+	}
+	if err := sock.Open(); err != nil {
 		log.WithFields(log.Fields{
 			"reason":  err,
 			"address": cfg.Address,
 		}).Error("Hive: Open hive sock failed")
-	} else {
-		conn.Sock = sock
+	} else if cfg.Auth == HiveAuthNoSasl {
+		conn.Transport = sock
+	} else if client, err := conn.buildSaslClient(); err != nil {
+		return err
+	} else if trans, err := stransport.NewTSaslTransport(sock, client); err != nil {
+		conn.Transport = trans
 	}
 
 	protocol := thrift.NewTBinaryProtocolFactoryDefault()
-	conn.Client = rpc.NewTCLIServiceClientFactory(conn.Sock, protocol)
+	conn.Client = rpc.NewTCLIServiceClientFactory(conn.Transport, protocol)
 	if err := conn.openSession(); err != nil {
 		return err
 	} else {
@@ -101,7 +118,7 @@ func (conn *HiveConn) Close() error {
 		errList = append(errList, err)
 	}
 
-	if err := conn.Sock.Close(); err != nil {
+	if err := conn.Transport.Close(); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
 		}).Error("Hive: close sock failed")
@@ -122,7 +139,7 @@ func (conn *HiveConn) Close() error {
 // If Conn.Ping returns ErrBadConn, DB.Ping and DB.PingContext will remove
 // the Conn from pool.
 func (conn *HiveConn) Ping(ctx context.Context) error {
-	if conn.Sock.IsOpen() {
+	if conn.Transport.IsOpen() {
 		return driver.ErrBadConn
 	}
 
@@ -325,5 +342,15 @@ func (conn *HiveConn) checkSession() error {
 		return errors.New("check session response success without info")
 	} else {
 		return nil
+	}
+}
+
+func (conn *HiveConn) buildSaslClient() (sasl.Client, error) {
+	cfg := conn.Config
+	switch cfg.Auth {
+	case HiveAuthKerberos:
+		return nil, errors.New("not implemented yet")
+	default:
+		return sasl.NewPlainClient("", cfg.User, []byte(cfg.Password))
 	}
 }
