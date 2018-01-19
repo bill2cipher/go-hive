@@ -20,6 +20,9 @@ const (
 	HiveAuthPlain = "plain"
 	// HiveAuthKerberos indicate kerberos sasl mechanism need here
 	HiveAuthKerberos = "kerberos"
+
+	anonymousUser     = "anonymous"
+	anonymousPassword = "anonymous"
 )
 
 // HiveConn implements driver.Conn
@@ -65,27 +68,31 @@ func (conn *HiveConn) init() error {
 		}).Error("Hive: Create hive sock failed")
 		return err
 	}
-	if err := sock.Open(); err != nil {
+	bufferSock := thrift.NewTBufferedTransport(sock, 1460)
+	if cfg.Auth == HiveAuthNoSasl {
+		conn.Transport = bufferSock
+	} else if client, err := conn.buildSaslClient(); err != nil {
+		return err
+	} else if trans, err := stransport.NewTSaslTransport(bufferSock, client); err != nil {
+		return err
+	} else {
+		conn.Transport = trans
+	}
+	if err := conn.Transport.Open(); err != nil {
 		log.WithFields(log.Fields{
 			"reason":  err,
 			"address": cfg.Address,
 		}).Error("Hive: Open hive sock failed")
-	} else if cfg.Auth == HiveAuthNoSasl {
-		conn.Transport = sock
-	} else if client, err := conn.buildSaslClient(); err != nil {
 		return err
-	} else if trans, err := stransport.NewTSaslTransport(sock, client); err != nil {
-		conn.Transport = trans
 	}
 
 	protocol := thrift.NewTBinaryProtocolFactoryDefault()
 	conn.Client = rpc.NewTCLIServiceClientFactory(conn.Transport, protocol)
 	if err := conn.openSession(); err != nil {
 		return err
-	} else {
-		log.Debug("Hive: Open connection success")
-		return nil
 	}
+	log.Debug("Hive: Open connection success")
+	return nil
 }
 
 // Begin starts and returns a new transaction.
@@ -139,7 +146,7 @@ func (conn *HiveConn) Close() error {
 // If Conn.Ping returns ErrBadConn, DB.Ping and DB.PingContext will remove
 // the Conn from pool.
 func (conn *HiveConn) Ping(ctx context.Context) error {
-	if conn.Transport.IsOpen() {
+	if !conn.Transport.IsOpen() {
 		return driver.ErrBadConn
 	}
 
@@ -314,7 +321,7 @@ func (conn *HiveConn) openSession() error {
 			"reason": err,
 		}).Error("Hive: Verify open session resp failed")
 		return err
-	} else if resp.GetSessionHandle() != nil {
+	} else if resp.GetSessionHandle() == nil {
 		log.Error("Hive: Open hive session success without handler")
 		return errors.New("open session success without handler")
 	} else {
@@ -351,6 +358,15 @@ func (conn *HiveConn) buildSaslClient() (sasl.Client, error) {
 	case HiveAuthKerberos:
 		return nil, errors.New("not implemented yet")
 	default:
-		return sasl.NewPlainClient("", cfg.User, []byte(cfg.Password))
+		user := cfg.User
+		if len(user) <= 0 {
+			user = anonymousUser
+		}
+
+		password := []byte(cfg.Password)
+		if password == nil || len(password) <= 0 {
+			password = []byte(anonymousPassword)
+		}
+		return sasl.NewPlainClient("", user, password)
 	}
 }

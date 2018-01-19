@@ -38,16 +38,16 @@ var REFLECT_MAP = map[string]reflect.Type{
 
 // VerifySuccess verifies if the status is success
 func VerifySuccess(status *rpc.TStatus, withInfo bool) error {
-	if (status.GetStatusCode() != rpc.TStatusCode_SUCCESS_STATUS) &&
-		(withInfo && (status.GetStatusCode() != rpc.TStatusCode_SUCCESS_WITH_INFO_STATUS)) {
-		log.WithFields(log.Fields{
-			"errorCode": status.GetErrorCode(),
-			"sqlState":  status.GetSqlState(),
-			"status":    status.GetStatusCode().String(),
-		}).Error("verify status failed")
-		return fmt.Errorf("Hive: Verify status failed with state: %s, code: %d", status.GetSqlState(), status.GetErrorCode())
+	if (status.GetStatusCode() == rpc.TStatusCode_SUCCESS_STATUS) ||
+		(withInfo && (status.GetStatusCode() == rpc.TStatusCode_SUCCESS_WITH_INFO_STATUS)) {
+		return nil
 	}
-	return nil
+	log.WithFields(log.Fields{
+		"errorCode": status.GetErrorCode(),
+		"sqlState":  status.GetSqlState(),
+		"status":    status.GetStatusCode().String(),
+	}).Error("verify status failed")
+	return fmt.Errorf("Hive: Verify status failed with state: %s, code: %d", status.GetSqlState(), status.GetErrorCode())
 }
 
 // SplitWith split the given string with sep according to sql syntax

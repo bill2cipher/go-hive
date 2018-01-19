@@ -34,7 +34,7 @@ func NewHiveStatement(conn *HiveConn, query string) (*HiveStatement, error) {
 	stmt := &HiveStatement{
 		connection:    conn,
 		rawQuery:      query,
-		argsCount:     len(parts),
+		argsCount:     len(parts) - 1,
 		lock:          &sync.Mutex{},
 		parts:         parts,
 		sessionHandle: conn.SessionHandle,

@@ -50,8 +50,8 @@ func (r *HiveRows) init(fetchSize int) error {
 // string should be returned for that entry.
 func (r *HiveRows) Columns() []string {
 	result := make([]string, len(r.columns))
-	for _, c := range r.columns {
-		result = append(result, c.GetColumnName())
+	for i, c := range r.columns {
+		result[i] = c.GetColumnName()
 	}
 	return result
 }
@@ -143,10 +143,10 @@ func (r *HiveRows) readResult(req *rpc.TFetchResultsReq) (*rpc.TFetchResultsResp
 	if resp, err := r.client.FetchResults(req); err != nil {
 		log.WithFields(log.Fields{
 			"reason": err,
-		}).Error("Hive: Get query log failed")
+		}).Error("Hive: Read result failed")
 		return nil, err
 	} else if err := VerifySuccess(resp.GetStatus(), true); err != nil {
-		log.Error("Hive: Get query log response error")
+		log.Error("Hive: Read result response error")
 		return nil, err
 	} else {
 		return resp, nil
